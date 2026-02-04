@@ -16,3 +16,5 @@ python-dotenv>=1.0.0
 
 # Caching (optional - in-memory)
 cachetools>=5.5.0
+
+# Note: Supabase integration uses httpx directly (no supabase-py needed)

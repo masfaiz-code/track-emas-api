@@ -89,3 +89,83 @@ class ErrorResponse(BaseModel):
     success: bool = Field(default=False)
     error: str
     detail: Optional[str] = None
+
+
+# =============================================
+# NEW MODELS FOR PRICE HISTORY & CHANGES
+# =============================================
+
+class PriceChange(BaseModel):
+    """Model for price change tracking"""
+    vendor: str = Field(..., description="Vendor name")
+    weight: float = Field(..., description="Gold weight in grams")
+    previous_price: Optional[int] = Field(None, description="Previous day's price")
+    current_price: Optional[int] = Field(None, description="Current price")
+    change_amount: Optional[int] = Field(None, description="Price change amount (can be negative)")
+    change_percent: Optional[float] = Field(None, description="Price change percentage")
+    trend: str = Field(..., description="Price trend: up, down, or stable")
+    price_date: str = Field(..., description="Date of the price")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "vendor": "ANTAM",
+                "weight": 1.0,
+                "previous_price": 3100000,
+                "current_price": 3129000,
+                "change_amount": 29000,
+                "change_percent": 0.94,
+                "trend": "up",
+                "price_date": "2026-02-04"
+            }
+        }
+
+
+class PriceChangeResponse(BaseModel):
+    """Response model for price changes endpoint"""
+    success: bool = Field(default=True)
+    data: list[PriceChange] = Field(default_factory=list)
+    summary: Optional[dict] = Field(None, description="Summary of trends")
+    meta: MetaInfo
+
+
+class PriceHistoryItem(BaseModel):
+    """Model for price history item"""
+    vendor: str
+    weight: float
+    selling_price: Optional[int]
+    buyback_price: Optional[int]
+    price_date: str
+    source: str = "galeri24"
+
+
+class PriceHistoryResponse(BaseModel):
+    """Response model for price history endpoint"""
+    success: bool = Field(default=True)
+    data: list[PriceHistoryItem] = Field(default_factory=list)
+    meta: MetaInfo
+
+
+class TrendSummary(BaseModel):
+    """Model for trend summary"""
+    up: int = Field(default=0, description="Number of prices that went up")
+    down: int = Field(default=0, description="Number of prices that went down")
+    stable: int = Field(default=0, description="Number of prices that stayed the same")
+    total: int = Field(default=0, description="Total price changes tracked")
+    period_days: int = Field(default=7, description="Period in days")
+
+
+class TrendResponse(BaseModel):
+    """Response model for trend summary endpoint"""
+    success: bool = Field(default=True)
+    summary: TrendSummary
+    meta: MetaInfo
+
+
+class SyncResponse(BaseModel):
+    """Response model for sync/save operations"""
+    success: bool = Field(default=True)
+    saved: int = Field(default=0, description="Number of records saved")
+    changes: int = Field(default=0, description="Number of price changes recorded")
+    message: str
+    timestamp: str

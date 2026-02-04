@@ -1,12 +1,17 @@
 # Lacak Emas API
 
-REST API untuk mendapatkan harga emas terkini dari [Galeri24](https://galeri24.co.id/harga-emas). Built with FastAPI + Swagger UI.
+REST API untuk mendapatkan harga emas terkini dari [Galeri24](https://galeri24.co.id/harga-emas) dengan tracking perubahan harga harian.
+
+Built with FastAPI + Swagger UI + Supabase.
 
 ## Features
 
 - 📊 **Harga real-time** dari galeri24.co.id
 - 🔍 **Filter** berdasarkan vendor (ANTAM, UBS, dll) dan berat
 - ⚡ **Caching** untuk performa optimal (default 5 menit)
+- 📈 **Tracking perubahan harga** (naik/turun/stabil)
+- 📅 **History harga** hingga 90 hari
+- 🗑️ **Auto-cleanup** data lama (retention 90 hari)
 - 📖 **Swagger UI** untuk dokumentasi interaktif
 - 🚀 **Production-ready** dengan error handling lengkap
 
@@ -34,14 +39,18 @@ PORT=8000
 
 # Debug Mode
 DEBUG=false
+
+# Supabase Configuration (optional - for history & tracking)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your_anon_key_here
 ```
 
 ## Setup Lokal
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/lacak-emas-api.git
-cd lacak-emas-api
+git clone https://github.com/masfaiz-code/track-emas-api.git
+cd track-emas-api
 
 # Buat virtual environment
 python -m venv venv
@@ -54,6 +63,7 @@ pip install -r requirements.txt
 
 # Buat file .env
 cp .env.example .env
+# Edit .env dengan credentials Anda
 
 # Jalankan server
 python main.py
@@ -71,60 +81,41 @@ GET /
 
 Buka browser di `http://localhost:8000` untuk melihat Swagger UI interaktif.
 
-### Info
+### Info & Health
 
-```
-GET /info
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/info` | API information |
+| GET | `/health` | Health check |
 
-### Health Check
+### Prices
 
-```
-GET /health
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/prices` | Get all gold prices |
+| GET | `/prices?vendor=antam` | Filter by vendor |
+| GET | `/prices?vendor=ubs&weight=1` | Filter by vendor and weight |
+| GET | `/vendors` | List available vendors |
 
-### List Vendors
+### History & Changes (Requires Supabase)
 
-```
-GET /vendors
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/prices/changes` | Price changes today (up/down/stable) |
+| GET | `/prices/history?days=7` | Price history for last 7 days |
+| GET | `/prices/trend?days=7` | Trend summary for period |
+| POST | `/prices/sync` | Sync prices to database |
 
-Response:
-```json
-{
-  "success": true,
-  "vendors": [
-    {"name": "ANTAM", "slug": "antam"},
-    {"name": "UBS", "slug": "ubs"},
-    {"name": "GALERI 24", "slug": "galeri24"},
-    {"name": "DINAR G24", "slug": "dinar"},
-    {"name": "BABY GALERI 24", "slug": "baby"}
-  ],
-  "total": 5
-}
-```
+### Cache
 
-### Get Prices
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/cache/clear` | Clear price cache |
 
-```
-GET /prices
-GET /prices?vendor=antam
-GET /prices?vendor=ubs&weight=1
-GET /prices?min_weight=1&max_weight=10
-GET /prices?no_cache=true
-```
+## Example Responses
 
-**Query Parameters:**
+### GET /prices?vendor=antam&weight=1
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `vendor` | string | Filter by vendor slug |
-| `weight` | float | Filter by exact weight (gram) |
-| `min_weight` | float | Filter by minimum weight |
-| `max_weight` | float | Filter by maximum weight |
-| `no_cache` | bool | Bypass cache for fresh data |
-
-Response:
 ```json
 {
   "success": true,
@@ -133,52 +124,71 @@ Response:
       "vendor": "ANTAM",
       "weight": 1.0,
       "unit": "gram",
-      "selling_price": 1850000,
-      "buyback_price": 1750000,
-      "price": 1800000,
-      "date": "2026-02-03"
+      "selling_price": 3129000,
+      "buyback_price": 2722000,
+      "price": null,
+      "date": "2026-02-04"
     }
   ],
   "meta": {
     "source": "galeri24.co.id",
-    "scraped_at": "2026-02-03T21:30:00.000000",
+    "scraped_at": "2026-02-04T10:30:00.000000",
     "total": 1,
     "cached": true
   }
 }
 ```
 
-### Clear Cache
+### GET /prices/changes?vendor=antam
 
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "vendor": "ANTAM",
+      "weight": 1.0,
+      "previous_price": 3100000,
+      "current_price": 3129000,
+      "change_amount": 29000,
+      "change_percent": 0.94,
+      "trend": "up",
+      "price_date": "2026-02-04"
+    }
+  ],
+  "summary": {
+    "up": 15,
+    "down": 3,
+    "stable": 2,
+    "total": 20
+  }
+}
 ```
-POST /cache/clear
-```
 
-## Testing dengan cURL
+## Database Schema (Supabase)
 
-### Get All Prices
+### Table: gold_prices
+- `id` (UUID) - Primary key
+- `vendor` (TEXT) - Vendor name
+- `weight` (DECIMAL) - Weight in grams
+- `selling_price` (INTEGER) - Selling price in IDR
+- `buyback_price` (INTEGER) - Buyback price in IDR
+- `price_date` (DATE) - Price date
+- `created_at` (TIMESTAMPTZ) - Record creation time
 
-```bash
-curl http://localhost:8000/prices
-```
+### Table: price_changes
+- `id` (UUID) - Primary key
+- `vendor` (TEXT) - Vendor name
+- `weight` (DECIMAL) - Weight in grams
+- `previous_price` (INTEGER) - Previous day's price
+- `current_price` (INTEGER) - Current price
+- `change_amount` (INTEGER) - Price difference
+- `change_percent` (DECIMAL) - Percentage change
+- `trend` (TEXT) - "up", "down", or "stable"
+- `price_date` (DATE) - Date of change
 
-### Filter by Vendor
-
-```bash
-curl "http://localhost:8000/prices?vendor=antam"
-```
-
-### Filter by Vendor dan Weight
-
-```bash
-curl "http://localhost:8000/prices?vendor=ubs&weight=1"
-```
-
-### Fresh Data (No Cache)
-
-```bash
-curl "http://localhost:8000/prices?no_cache=true"
-```
+### Auto-Cleanup (pg_cron)
+Data older than 90 days is automatically deleted daily at 00:00 UTC (07:00 WIB).
 
 ## Deploy ke Zeabur
 
@@ -188,24 +198,9 @@ curl "http://localhost:8000/prices?no_cache=true"
 4. Deploy dari GitHub repository
 5. Tambahkan environment variables:
    - `CACHE_TTL`
-   - `PORT` (optional, Zeabur akan set otomatis)
+   - `SUPABASE_URL`
+   - `SUPABASE_KEY`
 6. Zeabur akan otomatis detect Python dan deploy
-
-## Deploy ke Railway
-
-```bash
-# Install Railway CLI
-npm i -g @railway/cli
-
-# Login
-railway login
-
-# Init project
-railway init
-
-# Deploy
-railway up
-```
 
 ## Tech Stack
 
@@ -215,27 +210,33 @@ railway up
 - **HTTP Client**: httpx
 - **Validation**: Pydantic v2
 - **Caching**: cachetools (in-memory)
+- **Database**: Supabase (PostgreSQL)
 
 ## Project Structure
 
 ```
-lacak-emas-api/
+track-emas-api/
 ├── main.py           # FastAPI app + endpoints
 ├── scraper.py        # Galeri24 scraper logic
+├── database.py       # Supabase integration
 ├── models.py         # Pydantic models
 ├── requirements.txt  # Dependencies
+├── Procfile          # For Zeabur/Heroku deployment
+├── runtime.txt       # Python version
 ├── .env.example      # Environment template
 ├── .gitignore
 └── README.md
 ```
 
-## Error Codes
+## Cron Job for Auto-Sync
 
-| Code | Description |
-|------|-------------|
-| 200 | Success |
-| 400 | Bad request |
-| 500 | Server error / Scraping failed |
+To automatically sync prices daily, you can set up an external cron job to call:
+
+```bash
+curl -X POST https://your-api-url/prices/sync
+```
+
+Recommended schedule: Daily at 09:00 WIB (after Galeri24 updates prices)
 
 ## License
 
