@@ -12,7 +12,8 @@ from datetime import datetime, date
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
@@ -37,6 +38,11 @@ from scraper import (
     get_available_vendors,
     clear_cache,
     set_cache_ttl,
+)
+from rss import (
+    generate_rss_feed,
+    generate_changes_rss_feed,
+    generate_atom_feed,
 )
 
 # Load environment variables
@@ -113,6 +119,7 @@ GET /prices/history?days=7     # History 7 hari
     openapi_tags=[
         {"name": "Prices", "description": "Endpoints untuk mendapatkan harga emas"},
         {"name": "History", "description": "History dan tracking perubahan harga"},
+        {"name": "Feeds", "description": "RSS/Atom feeds untuk integrasi n8n dan feed readers"},
         {"name": "Info", "description": "Informasi API dan health check"},
     ]
 )
@@ -155,6 +162,9 @@ async def get_info():
             "GET /prices/history": "Get price history",
             "GET /prices/trend": "Get trend summary",
             "POST /prices/sync": "Sync prices to database",
+            "GET /feed/rss": "RSS feed of current prices",
+            "GET /feed/changes": "RSS feed of price changes (for n8n)",
+            "GET /feed/atom": "Atom feed of current prices",
             "GET /vendors": "List available vendors",
             "POST /cache/clear": "Clear price cache",
         },
@@ -521,6 +531,240 @@ async def sync_prices():
         raise HTTPException(status_code=503, detail="Database module not available")
     except Exception as e:
         logger.error(f"Error syncing prices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# RSS/ATOM FEED ENDPOINTS
+# ============================================================================
+
+@app.get(
+    "/feed/rss",
+    tags=["Feeds"],
+    summary="RSS Feed Harga Emas",
+    description="""
+RSS 2.0 feed untuk harga emas terkini.
+
+### Penggunaan dengan n8n:
+1. Tambahkan node **RSS Feed Read**
+2. Masukkan URL: `https://your-api.com/feed/rss`
+3. Set interval sesuai kebutuhan
+
+### Query Parameters:
+- **vendor**: Filter berdasarkan vendor
+- **weight**: Filter berdasarkan berat
+
+### Contoh:
+```
+/feed/rss                    # Semua harga
+/feed/rss?vendor=antam       # Hanya ANTAM
+/feed/rss?vendor=ubs&weight=1  # UBS 1 gram
+```
+    """,
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/rss+xml": {}},
+            "description": "RSS 2.0 feed"
+        }
+    }
+)
+async def get_rss_feed(
+    request: Request,
+    vendor: Optional[str] = Query(None, description="Filter by vendor"),
+    weight: Optional[float] = Query(None, description="Filter by weight in grams"),
+):
+    """Get RSS feed of current gold prices"""
+    try:
+        prices = await scrape_galeri24(use_cache=True, cache_ttl=CACHE_TTL)
+        
+        # Apply filters
+        filtered_prices = filter_prices(prices, vendor=vendor, weight=weight)
+        
+        # Convert to dict format for RSS generator
+        price_dicts = [
+            {
+                "vendor": p.vendor,
+                "weight": p.weight,
+                "selling_price": p.selling_price,
+                "buyback_price": p.buyback_price,
+                "date": p.date,
+            }
+            for p in filtered_prices
+        ]
+        
+        # Build feed URL
+        feed_url = str(request.url)
+        
+        # Generate title based on filters
+        title = "Lacak Emas - Harga Emas Terkini"
+        if vendor:
+            title = f"Lacak Emas - Harga {vendor.upper()}"
+        
+        rss_xml = generate_rss_feed(
+            prices=price_dicts,
+            title=title,
+            description=f"Update harga emas harian dari Galeri24 ({len(price_dicts)} items)",
+            feed_url=feed_url,
+        )
+        
+        return Response(
+            content=rss_xml,
+            media_type="application/rss+xml",
+            headers={"X-Total-Items": str(len(price_dicts))}
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating RSS feed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/feed/changes",
+    tags=["Feeds"],
+    summary="RSS Feed Perubahan Harga",
+    description="""
+RSS feed untuk perubahan harga emas (naik/turun/stabil).
+
+**Ideal untuk n8n triggers** - hanya muncul item baru ketika ada perubahan harga.
+
+### Penggunaan dengan n8n:
+1. Tambahkan node **RSS Feed Read Trigger**
+2. Masukkan URL: `https://your-api.com/feed/changes`
+3. n8n akan trigger workflow ketika ada item baru
+
+### Query Parameters:
+- **vendor**: Filter berdasarkan vendor
+- **trend**: Filter berdasarkan trend (up, down, stable)
+
+### Contoh:
+```
+/feed/changes                # Semua perubahan
+/feed/changes?trend=up       # Hanya yang naik
+/feed/changes?vendor=antam   # Hanya ANTAM
+```
+    """,
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/rss+xml": {}},
+            "description": "RSS 2.0 feed of price changes"
+        }
+    }
+)
+async def get_changes_rss_feed(
+    request: Request,
+    vendor: Optional[str] = Query(None, description="Filter by vendor"),
+    trend: Optional[str] = Query(None, description="Filter by trend: up, down, stable"),
+):
+    """Get RSS feed of price changes"""
+    if not SUPABASE_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Supabase not configured. Set SUPABASE_URL and SUPABASE_KEY."
+        )
+    
+    try:
+        from database import get_price_changes
+        
+        changes = await get_price_changes(vendor=vendor, trend=trend)
+        
+        feed_url = str(request.url)
+        
+        title = "Lacak Emas - Perubahan Harga"
+        if trend:
+            trend_text = {"up": "Naik", "down": "Turun", "stable": "Stabil"}.get(trend, trend)
+            title = f"Lacak Emas - Harga {trend_text}"
+        if vendor:
+            title += f" ({vendor.upper()})"
+        
+        rss_xml = generate_changes_rss_feed(
+            changes=changes,
+            title=title,
+            description=f"Notifikasi perubahan harga emas ({len(changes)} items)",
+            feed_url=feed_url,
+        )
+        
+        return Response(
+            content=rss_xml,
+            media_type="application/rss+xml",
+            headers={"X-Total-Items": str(len(changes))}
+        )
+        
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Database module not available")
+    except Exception as e:
+        logger.error(f"Error generating changes RSS feed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/feed/atom",
+    tags=["Feeds"],
+    summary="Atom Feed Harga Emas",
+    description="""
+Atom 1.0 feed sebagai alternatif RSS.
+Beberapa feed reader lebih prefer format Atom.
+
+### Query Parameters:
+- **vendor**: Filter berdasarkan vendor
+- **weight**: Filter berdasarkan berat
+    """,
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/atom+xml": {}},
+            "description": "Atom 1.0 feed"
+        }
+    }
+)
+async def get_atom_feed(
+    request: Request,
+    vendor: Optional[str] = Query(None, description="Filter by vendor"),
+    weight: Optional[float] = Query(None, description="Filter by weight in grams"),
+):
+    """Get Atom feed of current gold prices"""
+    try:
+        prices = await scrape_galeri24(use_cache=True, cache_ttl=CACHE_TTL)
+        
+        # Apply filters
+        filtered_prices = filter_prices(prices, vendor=vendor, weight=weight)
+        
+        # Convert to dict format
+        price_dicts = [
+            {
+                "vendor": p.vendor,
+                "weight": p.weight,
+                "selling_price": p.selling_price,
+                "buyback_price": p.buyback_price,
+                "date": p.date,
+            }
+            for p in filtered_prices
+        ]
+        
+        feed_url = str(request.url)
+        base_url = str(request.base_url).rstrip("/")
+        
+        title = "Lacak Emas - Harga Emas Terkini"
+        if vendor:
+            title = f"Lacak Emas - Harga {vendor.upper()}"
+        
+        atom_xml = generate_atom_feed(
+            prices=price_dicts,
+            title=title,
+            subtitle=f"Update harga emas harian dari Galeri24 ({len(price_dicts)} items)",
+            feed_url=feed_url,
+            website_url="https://galeri24.co.id/harga-emas",
+        )
+        
+        return Response(
+            content=atom_xml,
+            media_type="application/atom+xml",
+            headers={"X-Total-Items": str(len(price_dicts))}
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating Atom feed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
